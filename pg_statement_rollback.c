@@ -6,7 +6,7 @@
  *
  * Authors: Julien Rouhaud, Dave Sharpe, Gilles Darold 
  * Licence: PostgreSQL
- * Copyright (c) 2020-2023 LzLabs, GmbH
+ * Copyright (c) 2020-2024 LzLabs, GmbH
  *
  *-------------------------------------------------------------------------
  */
@@ -267,6 +267,27 @@ slr_ProcessUtility(SLR_PROCESSUTILITY_PROTO)
 #endif
 	bool release_add_savepoint = false;
 	bool add_savepoint = false;
+
+	/* disable all when this is a dump */
+	if (application_name && (strcmp(application_name, "pg_dump") == 0 || strcmp(application_name, "pg_dumpbinary") == 0))
+	{
+
+		elog(DEBUG1, "SLR DEBUG: Disabling pg_statement_rollback with pg_dump use.");
+		/* Excecute the utility command, we are not concerned */
+		PG_TRY();
+		{
+			if (prev_ProcessUtility)
+				prev_ProcessUtility(SLR_PROCESSUTILITY_ARGS);
+			else
+				standard_ProcessUtility(SLR_PROCESSUTILITY_ARGS);
+		}
+		PG_CATCH();
+		{
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+		return;
+	}
 
 	/* SPI calls are internal */
 	if (dest->mydest == DestSPI

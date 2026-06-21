@@ -125,12 +125,12 @@ RTEPermissionInfo *localGetRTEPermissionInfo(List *rteperminfos, RangeTblEntry *
 #endif
 
 /* Global variables for automatic savepoint */
-char    *slr_savepoint_name = "pg_statement_rollback";
-bool    slr_enabled        = true;
-bool    slr_xact_opened    = false;
-bool    slr_pending = false; /* Has an automatic savepoint been created? */
-bool    slr_defered_save_resowner = false; /* has defered savepoint */
-bool    slr_enable_writeonly = true; /* create savepoint only on write command
+static char    *slr_savepoint_name = NULL;
+static bool    slr_enabled        = true;
+static bool    slr_xact_opened    = false;
+static bool    slr_pending = false; /* Has an automatic savepoint been created? */
+static bool    slr_defered_save_resowner = false; /* has defered savepoint */
+static bool    slr_enable_writeonly = true; /* create savepoint only on write command
 					tag (INSERT/DELETE/UPDATE) and DDL */
 static int      slr_nest_executor_level = 0;
 static bool     slr_planner_done = false;

@@ -38,8 +38,13 @@
                                         QueryEnvironment *queryEnv, DestReceiver *dest, \
                                         QueryCompletion *qc
 #define SLR_PROCESSUTILITY_ARGS pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc
+#if PG_VERSION_NUM >= 190000
+#define SLR_PLANNERHOOK_PROTO Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams, ExplainState *es
+#define SLR_PLANNERHOOK_ARGS parse, query_string, cursorOptions, boundParams, es
+#else
 #define SLR_PLANNERHOOK_PROTO Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams
 #define SLR_PLANNERHOOK_ARGS parse, query_string, cursorOptions, boundParams
+#endif
 #else
 #if PG_VERSION_NUM >= 130000
 #define SLR_PROCESSUTILITY_PROTO PlannedStmt *pstmt, const char *queryString, \
@@ -96,7 +101,7 @@ static void slr_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 #else
                  long count
 #endif
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
                  ,bool execute_once
 #endif
 	);
@@ -588,7 +593,7 @@ slr_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 #else
                  long count
 #endif
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
                  , bool execute_once
 #endif
 	)
@@ -599,13 +604,13 @@ slr_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 	PG_TRY();
 	{
 		if (prev_ExecutorRun)
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
 			prev_ExecutorRun(queryDesc, direction, count, execute_once);
 #else
 			prev_ExecutorRun(queryDesc, direction, count);
 #endif
 		else
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
 			standard_ExecutorRun(queryDesc, direction, count, execute_once);
 #else
 			standard_ExecutorRun(queryDesc, direction, count);

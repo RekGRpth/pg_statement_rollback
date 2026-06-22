@@ -273,25 +273,44 @@ slr_ProcessUtility(SLR_PROCESSUTILITY_PROTO)
 	bool release_add_savepoint = false;
 	bool add_savepoint = false;
 
-	/* disable all when this is a dump */
-	if (application_name && (strcmp(application_name, "pg_dump") == 0 || strcmp(application_name, "pg_dumpbinary") == 0))
+	/*
+	 * Generic detection of dumps (and, more generally, of read-only work)
+	 * instead of matching application_name against "pg_dump"/"pg_dumpbinary".
+	 *
+	 * Statement-level rollback is meaningless in a read-only transaction:
+	 * there is no DML whose effects could ever need to be preserved across a
+	 * later statement failure.  We therefore stop creating automatic
+	 * savepoints as soon as the transaction is read-only (XactReadOnly).  This
+	 * covers pg_dump, pg_dumpbinary, pg_dumpall, pg_restore --data-only of a
+	 * read-only export, renamed binaries, third-party logical dumpers, sessions
+	 * opened with READ ONLY, read-only roles (default_transaction_read_only)
+	 * and hot standbys -- without relying on a hard-coded application_name.
+	 *
+	 * pg_dump opens its session with a bare "BEGIN" immediately followed by
+	 * "SET TRANSACTION ISOLATION LEVEL ... READ ONLY" (and, for parallel
+	 * dumps, "SET TRANSACTION SNAPSHOT").  At BEGIN time the transaction is not
+	 * yet read-only, so the automatic initial savepoint is created as usual --
+	 * which is required for the regression tests, where the very first
+	 * statement of a transaction may fail and still be rolled back with
+	 * "ROLLBACK TO <savepoint>".  That initial savepoint opens a subtransaction
+	 * and would make the following "SET TRANSACTION ..." fail ("must not be
+	 * called in a subtransaction").  We handle this just below by releasing the
+	 * automatic savepoint right before such a command runs; the !XactReadOnly
+	 * gates further down then prevent it (and any other savepoint) from being
+	 * recreated once the transaction has been switched to READ ONLY.
+	 */
+	if (slr_enabled && slr_pending && IsA(parsetree, VariableSetStmt))
 	{
+		VariableSetStmt *setstmt = (VariableSetStmt *) parsetree;
 
-		elog(DEBUG1, "SLR DEBUG: Disabling pg_statement_rollback with pg_dump use.");
-		/* Excecute the utility command, we are not concerned */
-		PG_TRY();
+		if (setstmt->name != NULL &&
+			(strcmp(setstmt->name, "TRANSACTION") == 0 ||
+			 strcmp(setstmt->name, "TRANSACTION SNAPSHOT") == 0))
 		{
-			if (prev_ProcessUtility)
-				prev_ProcessUtility(SLR_PROCESSUTILITY_ARGS);
-			else
-				standard_ProcessUtility(SLR_PROCESSUTILITY_ARGS);
+			elog(DEBUG1, "RSL: releasing automatic savepoint before SET %s.",
+					setstmt->name);
+			slr_release_savepoint();
 		}
-		PG_CATCH();
-		{
-			PG_RE_THROW();
-		}
-		PG_END_TRY();
-		return;
 	}
 
 	/* SPI calls are internal */
@@ -464,9 +483,13 @@ slr_ProcessUtility(SLR_PROCESSUTILITY_PROTO)
 
 	/*
 	 * RELEASE and add a SAVEPOINT if we just executed a statement
-	 * that should not rollback on failure of future statement failures
+	 * that should not rollback on failure of future statement failures.
+	 *
+	 * !XactReadOnly is tested here, after the statement ran, so that the
+	 * command that switches the transaction to READ ONLY does not itself
+	 * trigger the (re)creation of a savepoint.
 	 */
-	if (release_add_savepoint)
+	if (release_add_savepoint && !XactReadOnly)
 	{
 		elog(DEBUG1, "RSL: ProcessUtility release and add savepoint (slr_nest_executor_level %d, slr_planner_done %d).",
 				slr_nest_executor_level, slr_planner_done);
@@ -482,7 +505,7 @@ slr_ProcessUtility(SLR_PROCESSUTILITY_PROTO)
 		slr_add_savepoint();
 	}
 	/* Add an initial SAVEPOINT if we just opened a transaction */
-	else if (add_savepoint)
+	else if (add_savepoint && !XactReadOnly)
 	{
 		elog( DEBUG1, "RSL: ProcessUtility add savepoint (slr_nest_executor_level %d, slr_planner_done %d).",
 				slr_nest_executor_level, slr_planner_done);
@@ -558,7 +581,14 @@ slr_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	elog(DEBUG1, "RSL: ExecutorStart (slr_nest_executor_level %d, slr_planner_done %d, operation %d).",
 			slr_nest_executor_level, slr_planner_done, queryDesc->operation);
 
-	if (slr_enabled && slr_nest_executor_level == 0 && slr_planner_done)
+	/*
+	 * In a read-only transaction we never create savepoints, so there is no
+	 * need to save the resource owner either.  Keeping this gated on the same
+	 * !XactReadOnly condition as slr_ExecutorEnd() keeps the save in
+	 * slr_ExecutorStart() paired with the create in slr_ExecutorEnd().
+	 */
+	if (slr_enabled && slr_nest_executor_level == 0 && slr_planner_done
+			&& !XactReadOnly)
 	{
 		elog(DEBUG1, "RSL: ExecutorStart save ResourcesOwner.");
 		/*
@@ -675,7 +705,8 @@ slr_ExecutorEnd(QueryDesc *queryDesc)
 #if PG_VERSION_NUM >= 90500
 		!IN_PARALLEL_WORKER &&
 #endif
-		slr_enabled && slr_nest_executor_level == 0 && slr_planner_done && (
+		slr_enabled && slr_nest_executor_level == 0 && slr_planner_done
+		&& !XactReadOnly && (
 				!slr_enable_writeonly ||
 			 	slr_defered_save_resowner ||
 			 	slr_is_write_query(queryDesc) 

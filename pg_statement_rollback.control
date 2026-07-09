@@ -1,0 +1,4 @@
+comment = 'pg_stat_statement_rollback - Server side rollback at statement level for PostgreSQL'
+default_version = '1.6.0'
+module_pathname = '$libdir/pg_stat_statement_rollback'
+relocatable = false
